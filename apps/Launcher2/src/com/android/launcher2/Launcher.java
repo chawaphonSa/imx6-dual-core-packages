@@ -291,7 +291,7 @@ public final class Launcher extends Activity
         checkForLocaleChange();
         setContentView(R.layout.launcher);
         setupViews();
-        showFirstRunWorkspaceCling();
+        // showFirstRunWorkspaceCling();
 
         registerContentObservers();
 

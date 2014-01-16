@@ -269,14 +269,14 @@ public class MediaPlaybackService extends Service {
                     play();
                 }
             } else if (CMDPAUSE.equals(cmd) || PAUSE_ACTION.equals(action)) {
-                pause();
-                mPausedByTransientLossOfFocus = false;
+				// pause();
+				// mPausedByTransientLossOfFocus = false;
             } else if (CMDPLAY.equals(cmd)) {
                 play();
             } else if (CMDSTOP.equals(cmd)) {
-                pause();
-                mPausedByTransientLossOfFocus = false;
-                seek(0);
+                // pause();
+                // mPausedByTransientLossOfFocus = false;
+                // seek(0);
             } else if (MediaAppWidgetProvider.CMDAPPWIDGETUPDATE.equals(cmd)) {
                 // Someone asked us to refresh a set of specific widgets, probably
                 // because they were just added.
@@ -644,8 +644,8 @@ public class MediaPlaybackService extends Service {
                     play();
                 }
             } else if (CMDPAUSE.equals(cmd) || PAUSE_ACTION.equals(action)) {
-                pause();
-                mPausedByTransientLossOfFocus = false;
+				// pause();
+				// mPausedByTransientLossOfFocus = false;
             } else if (CMDPLAY.equals(cmd)) {
                 play();
             } else if (CMDSTOP.equals(cmd)) {

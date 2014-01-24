@@ -21,8 +21,8 @@ import com.android.nfc.DeviceHost.LlcpServerSocket;
 import com.android.nfc.DeviceHost.LlcpSocket;
 import com.android.nfc.DeviceHost.NfcDepEndpoint;
 import com.android.nfc.DeviceHost.TagEndpoint;
-import com.android.nfc.nxp.NativeNfcManager;
-import com.android.nfc.nxp.NativeNfcSecureElement;
+import com.android.nfc.stollmann.NativeNfcManager;
+import com.android.nfc.stollmann.NativeNfcSecureElement;
 
 import android.app.Application;
 import android.app.KeyguardManager;
@@ -63,8 +63,11 @@ import android.os.PowerManager;
 import android.os.Process;
 import android.os.RemoteException;
 import android.os.ServiceManager;
+import android.os.SystemProperties;
 import android.provider.Settings;
 import android.util.Log;
+import android.telephony.TelephonyManager;
+import com.android.internal.telephony.TelephonyIntents;
 
 import java.io.FileDescriptor;
 import java.io.IOException;
@@ -92,6 +95,12 @@ public class NfcService extends Application implements DeviceHostListener {
     private static final String ADMIN_PERM_ERROR = "WRITE_SECURE_SETTINGS permission required";
 
     public static final String PREF = "NfcServicePrefs";
+    
+    static final int  QUIRK_SE_ALWAYS_VIRTUAL     = 1  ;  // Not used any more.
+    static final int  QUIRK_NFC_ON_AFTER_SHUTDOWN = 2  ;  // 
+    static final int  QUIRK_UICC_ENABLE_LOWBAT    = 4  ;  // whether CE is active in PowerOff(Bat good) state.
+    static final int  QUIRK_UICC_ENABLE_SCREENOFF = 8  ;  // whether CE is active in ScreenLocked and ScreenOff state 
+    static final int  QUIRK_NFC_EXTRAS_ROUTING    = 16 ;  // whether NfcExtras.SetRouting is active. 
 
     static final String PREF_NFC_ON = "nfc_on";
     static final boolean NFC_ON_DEFAULT = true;
@@ -118,6 +127,8 @@ public class NfcService extends Application implements DeviceHostListener {
     static final int TASK_DISABLE = 2;
     static final int TASK_BOOT = 3;
     static final int TASK_EE_WIPE = 4;
+    static final int TASK_ENABLE_FROM_AIRPLANEMODE = 5;
+    static final int TASK_SHUTDOWNACTION = 6;
 
     // Screen state, used by mScreenState
     static final int SCREEN_STATE_UNKNOWN = 0;
@@ -158,6 +169,10 @@ public class NfcService extends Application implements DeviceHostListener {
         "com.android.nfc_extras.action.MIFARE_ACCESS_DETECTED";
     public static final String EXTRA_MIFARE_BLOCK =
         "com.android.nfc_extras.extra.MIFARE_BLOCK";
+    private static final int REACT_NONE    = 0;
+    private static final int REACT_PENDING = 1;
+    private static final int REACT_PENDING_SIMREADY = 2;
+    private static final int REACT_PENDING_FLIGHTOFF = 3;
 
     //TODO: dont hardcode this
     private static final byte[][] EE_WIPE_APDUS = {
@@ -177,6 +192,10 @@ public class NfcService extends Application implements DeviceHostListener {
     private NativeNfcSecureElement mSecureElement;
     private OpenSecureElement mOpenEe;  // null when EE closed
     private int mEeRoutingState;  // contactless interface routing
+    
+    // for fixing a framework deficiency we handle a flag for allowing NdefFormatable.format(null) 
+    // to end without exception.
+    private boolean lastCmdWasFormat=false;
 
     // fields below must be used only on the UI thread and therefore aren't synchronized
     boolean mP2pStarted = false;
@@ -185,6 +204,9 @@ public class NfcService extends Application implements DeviceHostListener {
     final HashMap<Integer, Object> mObjectMap = new HashMap<Integer, Object>();
     HashSet<String> mSePackages = new HashSet<String>();
     int mScreenState;
+    int mOemOptions; // configuration bit-vector of
+    int mSimState = TelephonyManager.SIM_STATE_ABSENT;
+    boolean mBootReady = false;
     boolean mIsNdefPushEnabled;
     boolean mNfceeRouteEnabled;  // current Device Host state of NFC-EE routing
     boolean mNfcPollingEnabled;  // current Device Host state of NFC-C polling
@@ -196,7 +218,7 @@ public class NfcService extends Application implements DeviceHostListener {
 
     // fields below are final after onCreate()
     Context mContext;
-    private DeviceHost mDeviceHost;
+    private NativeNfcManager mDeviceHost;
     private SharedPreferences mPrefs;
     private SharedPreferences.Editor mPrefsEditor;
     private PowerManager.WakeLock mWakeLock;
@@ -215,6 +237,7 @@ public class NfcService extends Application implements DeviceHostListener {
     private NfcDispatcher mNfcDispatcher;
     private PowerManager mPowerManager;
     private KeyguardManager mKeyguard;
+    private TelephonyManager mTelephony;
 
     private static NfcService sService;
 
@@ -308,7 +331,15 @@ public class NfcService extends Application implements DeviceHostListener {
         mExtrasService = new NfcAdapterExtrasService();
 
         Log.i(TAG, "Starting NFC service");
-
+        try{
+          mOemOptions = Integer.valueOf(SystemProperties.get("ro.stollmann.nfc.options"));
+        }catch( Exception e)
+        {
+          mOemOptions = 0;
+        }
+        
+        Log.i(TAG, "NFC service finds OemOptions = "+String.valueOf(mOemOptions));
+        
         sService = this;
 
         mContext = this;
@@ -318,7 +349,15 @@ public class NfcService extends Application implements DeviceHostListener {
         mNfcDispatcher = new NfcDispatcher(this, mP2pLinkManager);
 
         mSecureElement = new NativeNfcSecureElement();
-        mEeRoutingState = ROUTE_OFF;
+
+        if ((mOemOptions & QUIRK_NFC_EXTRAS_ROUTING)!=0)
+        {
+          // Default for NfcExtras style routing:
+          mEeRoutingState = ROUTE_OFF;
+        } else {
+          // for ISIS routing:
+          mEeRoutingState = ROUTE_ON_WHEN_SCREEN_ON;
+        }
 
         mNfceeAccessControl = new NfceeAccessControl(this);
 
@@ -326,12 +365,14 @@ public class NfcService extends Application implements DeviceHostListener {
         mPrefsEditor = mPrefs.edit();
 
         mState = NfcAdapter.STATE_OFF;
+        mDeviceHost.setServiceState(mState);
         mIsNdefPushEnabled = mPrefs.getBoolean(PREF_NDEF_PUSH_ON, NDEF_PUSH_ON_DEFAULT);
 
         mPowerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
 
         mWakeLock = mPowerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "NfcService");
         mKeyguard = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
+        mTelephony = (TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
         mScreenState = checkScreenState();
 
         ServiceManager.addService(SERVICE_NAME, mNfcAdapter);
@@ -341,6 +382,9 @@ public class NfcService extends Application implements DeviceHostListener {
         filter.addAction(Intent.ACTION_SCREEN_ON);
         filter.addAction(ACTION_MASTER_CLEAR_NOTIFICATION);
         filter.addAction(Intent.ACTION_USER_PRESENT);
+        filter.addAction(Intent.ACTION_SHUTDOWN);
+        filter.addAction(TelephonyIntents.ACTION_SIM_STATE_CHANGED);
+        filter.addAction(Intent.ACTION_BOOT_COMPLETED);
         registerForAirplaneMode(filter);
         registerReceiver(mReceiver, filter);
 
@@ -352,7 +396,10 @@ public class NfcService extends Application implements DeviceHostListener {
 
         new EnableDisableTask().execute(TASK_BOOT);  // do blocking boot tasks
     }
-
+    public  int GetOemOptions()
+    {
+		return mOemOptions;
+	}
     void initSoundPool() {
         synchronized(this) {
             if (mSoundPool == null) {
@@ -391,6 +438,7 @@ public class NfcService extends Application implements DeviceHostListener {
     }
 
     int checkScreenState() {
+		Log.i(TAG, "isScreenOn"+String.valueOf(mPowerManager.isScreenOn())+" isKeyguardLocked="+String.valueOf(mKeyguard.isKeyguardLocked()));
         if (!mPowerManager.isScreenOn()) {
             return SCREEN_STATE_OFF;
         } else if (mKeyguard.isKeyguardLocked()) {
@@ -451,17 +499,28 @@ public class NfcService extends Application implements DeviceHostListener {
             Process.setThreadPriority(Process.THREAD_PRIORITY_DEFAULT);
 
             switch (params[0].intValue()) {
+                case TASK_ENABLE_FROM_AIRPLANEMODE:
+                    if (mPrefs.getBoolean(PREF_NFC_ON, NFC_ON_DEFAULT))
+                    {
+						disableInternal(false);
+						enableInternal();
+					}
+                    break;
                 case TASK_ENABLE:
                     enableInternal();
                     break;
                 case TASK_DISABLE:
-                    disableInternal();
+                    disableInternal(false);
                     break;
+                case TASK_SHUTDOWNACTION:
+                    disableInternal(true);
+					break;
                 case TASK_BOOT:
                     Log.d(TAG,"checking on firmware download");
                     if (mPrefs.getBoolean(PREF_NFC_ON, NFC_ON_DEFAULT) &&
                             !(mIsAirplaneSensitive && isAirplaneModeOn())) {
                         Log.d(TAG,"NFC is on. Doing normal stuff");
+                        try{Thread.sleep(3000);} catch(Exception e){};
                         enableInternal();
                     } else {
                         Log.d(TAG,"NFC is off.  Checking firmware version");
@@ -519,12 +578,17 @@ public class NfcService extends Application implements DeviceHostListener {
          * Disable all NFC adapter functions.
          * Does not toggle preferences.
          */
-        boolean disableInternal() {
+        boolean disableInternal(boolean isForShutdown) {
             if (mState == NfcAdapter.STATE_OFF) {
                 return true;
             }
-            Log.i(TAG, "Disabling NFC");
-            updateState(NfcAdapter.STATE_TURNING_OFF);
+            if(isForShutdown) {
+				Log.i(TAG, "Shutdown NFC before power_off");
+			 }
+			 else {
+				Log.i(TAG, "Disabling NFC");
+				updateState(NfcAdapter.STATE_TURNING_OFF);
+			 }
 
             /* Sometimes mDeviceHost.deinitialize() hangs, use a watch-dog.
              * Implemented with a new thread (instead of a Handler or AsyncTask),
@@ -549,7 +613,10 @@ public class NfcService extends Application implements DeviceHostListener {
 
             watchDog.cancel();
 
-            updateState(NfcAdapter.STATE_OFF);
+			// We change state only when actively turning off
+            if(!isForShutdown) {
+				updateState(NfcAdapter.STATE_OFF);
+			}
 
             releaseSoundPool();
 
@@ -572,7 +639,7 @@ public class NfcService extends Application implements DeviceHostListener {
             if (handle == 0) {
                 Log.w(TAG, "Could not open the secure element");
                 if (tempEnable) {
-                    disableInternal();
+                    disableInternal(false);
                 }
                 return;
             }
@@ -591,7 +658,7 @@ public class NfcService extends Application implements DeviceHostListener {
             mSecureElement.doDisconnect(handle);
 
             if (tempEnable) {
-                disableInternal();
+                disableInternal(false);
             }
         }
 
@@ -601,6 +668,7 @@ public class NfcService extends Application implements DeviceHostListener {
                     return;
                 }
                 mState = newState;
+                mDeviceHost.setServiceState(mState);
                 Intent intent = new Intent(NfcAdapter.ACTION_ADAPTER_STATE_CHANGED);
                 intent.setFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
                 intent.putExtra(NfcAdapter.EXTRA_ADAPTER_STATE, mState);
@@ -804,6 +872,8 @@ public class NfcService extends Application implements DeviceHostListener {
             mContext.enforceCallingOrSelfPermission(NFC_PERM, NFC_PERM_ERROR);
 
             TagEndpoint tag = null;
+            
+            lastCmdWasFormat =false; // centrally reset here 
 
             if (!isNfcEnabled()) {
                 return ErrorCodes.ERROR_NOT_INITIALIZED;
@@ -835,6 +905,8 @@ public class NfcService extends Application implements DeviceHostListener {
 
             TagEndpoint tag = null;
 
+            lastCmdWasFormat =false; // centrally reset here 
+            
             // Check if NFC is enabled
             if (!isNfcEnabled()) {
                 return ErrorCodes.ERROR_NOT_INITIALIZED;
@@ -1004,6 +1076,27 @@ public class NfcService extends Application implements DeviceHostListener {
             if (tag == null) {
                 return ErrorCodes.ERROR_IO;
             }
+            if (msg == null){
+				if(lastCmdWasFormat)
+				{
+					// ignore this write with 'null' message
+					// when we just have seen a format before
+					// this is a hack because the framework code
+					// of NdefFormatable is broken.
+					lastCmdWasFormat = false;
+					
+					return ErrorCodes.SUCCESS;
+				}
+				else
+					return ErrorCodes.ERROR_INVALID_PARAM;
+			}
+			
+            try {
+			// use NdefMessage.new to confirm message is well formatted.
+			new NdefMessage(msg.toByteArray());
+			} catch (FormatException e) {
+				return ErrorCodes.ERROR_INVALID_PARAM;
+			}
 
             if (tag.writeNdef(msg.toByteArray())) {
                 return ErrorCodes.SUCCESS;
@@ -1065,6 +1158,7 @@ public class NfcService extends Application implements DeviceHostListener {
             }
 
             if (tag.formatNdef(key)) {
+				lastCmdWasFormat = true;
                 return ErrorCodes.SUCCESS;
             } else {
                 return ErrorCodes.ERROR_IO;
@@ -1131,8 +1225,9 @@ public class NfcService extends Application implements DeviceHostListener {
 
         @Override
         public boolean canMakeReadOnly(int ndefType) throws RemoteException {
-            mContext.enforceCallingOrSelfPermission(NFC_PERM, NFC_PERM_ERROR);
-
+            
+            // Stollmann: This permission check is not required from the spec.
+            // mContext.enforceCallingOrSelfPermission(NFC_PERM, NFC_PERM_ERROR);
             return mDeviceHost.canMakeReadOnly(ndefType);
         }
 
@@ -1284,8 +1379,12 @@ public class NfcService extends Application implements DeviceHostListener {
         @Override
         public void setCardEmulationRoute(String pkg, int route) throws RemoteException {
             NfcService.this.enforceNfceeAdminPerm(pkg);
-            mEeRoutingState = route;
-            applyRouting(true);
+            // ignore requests from NfcExtras-Users if not OEM-Option is set.
+            if((mOemOptions & QUIRK_NFC_EXTRAS_ROUTING)== QUIRK_NFC_EXTRAS_ROUTING)
+            {
+				mEeRoutingState = route;
+				applyRouting(true);
+			}
         }
 
         @Override
@@ -1361,39 +1460,24 @@ public class NfcService extends Application implements DeviceHostListener {
      */
     void applyRouting(boolean force) {
         synchronized (this) {
-            if (!isNfcEnabled() || mOpenEe != null) {
-                // PN544 cannot be reconfigured while EE is open
-                return;
+       
+            int minimumScreenState;
+            if(mState == NfcAdapter.STATE_OFF ||
+               mState == NfcAdapter.STATE_TURNING_ON)
+               {
+                 Log.d(TAG, "applyRouting: We are off, nothing to do");   
+                 return;
+			   }
+      
+            
+            if ((mOemOptions & QUIRK_UICC_ENABLE_SCREENOFF) != 0) {
+              minimumScreenState = SCREEN_STATE_OFF;
+            } else {
+              minimumScreenState = SCREEN_STATE_ON_UNLOCKED;
             }
-
-            if (PN544_QUIRK_DISCONNECT_BEFORE_RECONFIGURE && mScreenState == SCREEN_STATE_OFF) {
-                /* TODO undo this after the LLCP stack is fixed.
-                 * Use a different sequence when turning the screen off to
-                 * workaround race conditions in pn544 libnfc. The race occurs
-                 * when we change routing while there is a P2P target connect.
-                 * The async LLCP callback will crash since the routing code
-                 * is overwriting globals it relies on.
-                 */
-                if (POLLING_MODE > SCREEN_STATE_OFF) {
-                    if (force || mNfcPollingEnabled) {
-                        Log.d(TAG, "NFC-C OFF, disconnect");
-                        mNfcPollingEnabled = false;
-                        mDeviceHost.disableDiscovery();
-                        maybeDisconnectTarget();
-                    }
-                }
-                if (mEeRoutingState == ROUTE_ON_WHEN_SCREEN_ON) {
-                    if (force || mNfceeRouteEnabled) {
-                        Log.d(TAG, "NFC-EE OFF");
-                        mNfceeRouteEnabled = false;
-                        mDeviceHost.doDeselectSecureElement();
-                    }
-                }
-                return;
-            }
-
+            
             // configure NFC-EE routing
-            if (mScreenState >= SCREEN_STATE_ON_LOCKED &&
+            if (isNfcEnabled() && (mScreenState >= minimumScreenState) &&
                     mEeRoutingState == ROUTE_ON_WHEN_SCREEN_ON) {
                 if (force || !mNfceeRouteEnabled) {
                     Log.d(TAG, "NFC-EE ON");
@@ -1774,23 +1858,36 @@ public class NfcService extends Application implements DeviceHostListener {
             String action = intent.getAction();
             if (action.equals(
                     NativeNfcManager.INTERNAL_TARGET_DESELECTED_ACTION)) {
+
                 // Perform applyRouting() in AsyncTask to serialize blocking calls
+                Log.i(TAG, "Intent INTERNAL_TARGET_DESELECTED_ACTION");
                 new ApplyRoutingTask().execute();
+            } else if (action.equals(Intent.ACTION_BOOT_COMPLETED)){
+                Log.i(TAG, "Intent ACTION_BOOT_COMPLETED");
+
+                mBootReady  = true;
+                mScreenState = checkScreenState(); // re-evaluate screenstate
+				new EnableDisableTask().execute(TASK_BOOT);
+			
             } else if (action.equals(Intent.ACTION_SCREEN_ON)
                     || action.equals(Intent.ACTION_SCREEN_OFF)
                     || action.equals(Intent.ACTION_USER_PRESENT)) {
                 // Perform applyRouting() in AsyncTask to serialize blocking calls
                 int screenState = SCREEN_STATE_OFF;
                 if (action.equals(Intent.ACTION_SCREEN_OFF)) {
+                    Log.i(TAG, "Intent SCREEN_STATE_OFF");
                     screenState = SCREEN_STATE_OFF;
                 } else if (action.equals(Intent.ACTION_SCREEN_ON)) {
+                    Log.i(TAG, "Intent ACTION_SCREEN_ON");
                     screenState = mKeyguard.isKeyguardLocked() ?
                             SCREEN_STATE_ON_LOCKED : SCREEN_STATE_ON_UNLOCKED;
                 } else if (action.equals(Intent.ACTION_USER_PRESENT)) {
+                    Log.i(TAG, "Intent ACTION_USER_PRESENT");
                     screenState = SCREEN_STATE_ON_UNLOCKED;
                 }
                 new ApplyRoutingTask().execute(Integer.valueOf(screenState));
             } else if (action.equals(ACTION_MASTER_CLEAR_NOTIFICATION)) {
+                Log.i(TAG, "Intent ACTION_MASTER_CLEAR_NOTIFICATION");
                 EnableDisableTask eeWipeTask = new EnableDisableTask();
                 eeWipeTask.execute(TASK_EE_WIPE);
                 try {
@@ -1802,6 +1899,7 @@ public class NfcService extends Application implements DeviceHostListener {
                 }
             } else if (action.equals(Intent.ACTION_PACKAGE_REMOVED)) {
                 // Clear the NFCEE access cache in case a UID gets recycled
+                Log.i(TAG, "Intent ACTION_PACKAGE_REMOVED");
                 mNfceeAccessControl.invalidateCache();
 
                 boolean dataRemoved = intent.getBooleanExtra(Intent.EXTRA_DATA_REMOVED, false);
@@ -1821,6 +1919,7 @@ public class NfcService extends Application implements DeviceHostListener {
                 boolean isAirplaneModeOn = intent.getBooleanExtra("state", false);
                 // Query the airplane mode from Settings.System just to make sure that
                 // some random app is not sending this intent
+                Log.i(TAG, "Intent ACTION_AIRPLANE_MODE_CHANGED");
                 if (isAirplaneModeOn != isAirplaneModeOn()) {
                     return;
                 }
@@ -1829,10 +1928,71 @@ public class NfcService extends Application implements DeviceHostListener {
                 }
                 if (isAirplaneModeOn) {
                     new EnableDisableTask().execute(TASK_DISABLE);
-                } else if (!isAirplaneModeOn && mPrefs.getBoolean(PREF_NFC_ON, NFC_ON_DEFAULT)) {
-                    new EnableDisableTask().execute(TASK_ENABLE);
+                } else {
+					if (!isAirplaneModeOn && mPrefs.getBoolean(PREF_NFC_ON, NFC_ON_DEFAULT)) {
+						new EnableDisableTask().execute(TASK_ENABLE_FROM_AIRPLANEMODE);
+				    }
                 }
-            }
+			} else if (action.equals(TelephonyIntents.ACTION_SIM_STATE_CHANGED)) {
+				// SIM status has changed
+				Log.w(TAG, "Intent SIM_STATE_CHANGE");
+				int oldSimState = mSimState;
+				mSimState = mTelephony.getSimState();
+
+				// log the state
+				switch(mSimState)
+				{
+					case TelephonyManager.SIM_STATE_UNKNOWN:
+						Log.w(TAG, "-> SIM_STATE_UNKNOWN");
+						break;
+					case TelephonyManager.SIM_STATE_ABSENT:
+						Log.w(TAG, "-> SIM_STATE_ABSENT");
+						break;
+					case TelephonyManager.SIM_STATE_PIN_REQUIRED:
+						Log.w(TAG, "SIM_STATE_PIN_REQUIRED");
+						break;
+					case TelephonyManager.SIM_STATE_PUK_REQUIRED:
+						Log.w(TAG, "SIM_STATE_PUK_REQUIRED");
+						break;
+					case TelephonyManager.SIM_STATE_NETWORK_LOCKED:
+						Log.w(TAG, "SIM_STATE_NETWORK_LOCKED");
+						break;
+					case TelephonyManager.SIM_STATE_READY:
+						Log.w(TAG, "SIM_STATE_READY");
+						break;
+
+				}
+				// act on detecting the SIM
+				switch(oldSimState)
+				{
+					case TelephonyManager.SIM_STATE_UNKNOWN:
+					case TelephonyManager.SIM_STATE_ABSENT:
+						// if we change to a working sim and NFC is ON we do off/on
+						// to make CE work on muted UICCs.
+						switch(mSimState)
+						{
+							case TelephonyManager.SIM_STATE_UNKNOWN:
+							case TelephonyManager.SIM_STATE_ABSENT:
+								break;
+							default:
+								if (mBootReady && !isAirplaneModeOn() && mPrefs.getBoolean(PREF_NFC_ON, NFC_ON_DEFAULT)) {
+									new EnableDisableTask().execute(TASK_ENABLE_FROM_AIRPLANEMODE);
+								}
+						}
+				}
+			} else if (action.equals(Intent.ACTION_SHUTDOWN)) {
+				Log.w(TAG, "shutting down NFC-Service");
+				EnableDisableTask task = new EnableDisableTask();
+				task.execute(TASK_SHUTDOWNACTION);
+				Log.w(TAG, "waiting for shutdown to finish");
+				try {
+					task.get();
+				} catch (Exception e)
+				{
+					/* we don't care */
+				}
+				Log.w(TAG, "NFC-Service has shut down.");
+			}
         }
     };
 

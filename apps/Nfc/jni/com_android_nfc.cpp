@@ -1,5 +1,13 @@
-/*
- * Copyright (C) 2010 The Android Open Source Project
+/** ----------------------------------------------------------------------
+ * File      : $RCSfile: com_android_nfc.cpp,v $
+ * Revision  : $Revision: 1.43.2.3 $
+ * Date      : $Date: 2012/09/12 16:46:02 $
+ * Author    : Mathias Ellinger
+ * Copyright (c)2011 Stollmann E+V GmbH
+ *              Mendelssohnstr. 15
+ *              22761 Hamburg
+ *              Phone: +49 40 89088-0
+ *
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -12,552 +20,834 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- */
+ *
+ * $log:$
+ *
+ ----------------------------------------------------------------------*/
 
-#include <stdlib.h>
-
-#include "errno.h"
 #include "com_android_nfc.h"
-#include "com_android_nfc_list.h"
-#include "phLibNfcStatus.h"
+#include "com_android_nfc_errorcodes.h"
+#include <sys/system_properties.h>
+
+pthread_mutex_t debugOutputSem   = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t concurrencyMutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t globalInitMutex  = PTHREAD_MUTEX_INITIALIZER;
+
+BOOL            globalIsInitialized = FALSE;
+
+/*------------------------------------------------------------------*/
+/**
+ * @fn     mapNfcStatusToAndroid
+ *
+ * @brief  maps NFCStatus to Android nfc_errorcodes 
+ *
+ * @return mapped State
+ */
+/*------------------------------------------------------------------*/
+int mapNfcStatusToAndroid (NFCSTATUS p)
+{
+	int status = ERROR_IO;
+	switch(p)
+  	{ // TODO map more codes
+    
+    case nfcStatusSuccess:
+     status = ERROR_SUCCESS;
+     break;
+     
+		case nfcStatusFailed:
+		 status = ERROR_IO;
+		 break;
+		default:
+		 status = ERROR_IO;
+		 break;
+	}
+	return status;
+}
+
+void PrintAndroidVersion (JNIEnv *env)
+{
+  jclass   clsVersion;
+  jfieldID id;
+  bool     GotData = false;
+
+  do
+  {
+    clsVersion = env->FindClass("android/os/Build$VERSION");
+    if (!clsVersion)
+      break;
+
+    id = env->GetStaticFieldID(clsVersion, "RELEASE", "Ljava/lang/String;");
+    if (!id)
+      break;
+
+    jstring obj = (jstring) env->GetStaticObjectField(clsVersion, id);
+    if (!obj)
+      break;
+
+    const char *string = env->GetStringUTFChars(obj, 0);
+    LOGV("Android version is %s\n", string);
+    env->ReleaseStringUTFChars(obj, string);
+
+    GotData = true;
+  } while (0);
+
+  if (!GotData)
+  {
+    LOG("! Access android version failed\n");
+  }
+} /* PrintAndroidVersion */
 
 /*
  * JNI Initialization
  */
-jint JNI_OnLoad(JavaVM *jvm, void *reserved)
+
+jint JNI_OnLoad (JavaVM *jvm, void *reserved)
 {
-   JNIEnv *e;
+  JNIEnv *e;
+  (void) reserved;
 
-   LOGD("NFC Service : loading JNI\n");
+  LOG("NFC Service : loading JNI\n");
 
-   // Check JNI version
-   if(jvm->GetEnv((void **)&e, JNI_VERSION_1_6))
-      return JNI_ERR;
+  // Check JNI version
+  if (jvm->GetEnv((void **) &e, JNI_VERSION_1_6))
+    return JNI_ERR;
 
-   android::vm = jvm;
+  PrintAndroidVersion(e);
 
-   if (android::register_com_android_nfc_NativeNfcManager(e) == -1)
-      return JNI_ERR;
-   if (android::register_com_android_nfc_NativeNfcTag(e) == -1)
-      return JNI_ERR;
-   if (android::register_com_android_nfc_NativeP2pDevice(e) == -1)
-      return JNI_ERR;
-   if (android::register_com_android_nfc_NativeLlcpSocket(e) == -1)
-      return JNI_ERR;
-   if (android::register_com_android_nfc_NativeLlcpConnectionlessSocket(e) == -1)
-      return JNI_ERR;
-   if (android::register_com_android_nfc_NativeLlcpServiceSocket(e) == -1)
-      return JNI_ERR;
-   if (android::register_com_android_nfc_NativeNfcSecureElement(e) == -1)
-      return JNI_ERR;
+  if (!android::register_com_android_nfc_NativeNfcManager(e))
+  {
+    LOG("! Register NativeNfcManger failed");
+    return JNI_ERR;
+  }
 
-   return JNI_VERSION_1_6;
-}
+  if (!android::register_com_android_nfc_NativeNfcTag(e))
+  {
+    LOG("! Register NativeNfcTag failed");
+    return JNI_ERR;
+  }
+
+  if (!android::register_com_android_nfc_NativeP2pDevice(e))
+  {
+    LOG("! Register NativeP2PDevice failed");
+    return JNI_ERR;
+  }
+
+  if (!android::register_com_android_nfc_NativeLlcpSocket(e))
+  {
+    LOG("! Register NativeLlcpSocket failed");
+    return JNI_ERR;
+  }
+
+  if (!android::register_com_android_nfc_NativeLlcpServiceSocket(e))
+  {
+    LOG("! Register NativeLlcpServiceSocket failed");
+    return JNI_ERR;
+  }
+
+  if (!android::register_com_android_nfc_NativeNfcSecureElement(e))
+  {
+    LOG("! Register NativeNfcSecureElement failed");
+    return JNI_ERR;
+  }
+
+  return JNI_VERSION_1_6;
+} // JNI_OnLoad
 
 namespace android {
+extern PNfcService exported_pService;
 
-extern struct nfc_jni_native_data *exported_nat;
+/* thread save output functions */
 
-JavaVM *vm;
+void threadsaveOutputProc (const char *string)
+{
+  pthread_mutex_lock(&::debugOutputSem);
+  __android_log_print(ANDROID_LOG_DEBUG, "nfc-stm", string);
+  pthread_mutex_unlock(&::debugOutputSem);
+}
+
+static int addTechnology (int *techList,
+                          int *handleList,
+                          int *typeList,
+                          int  listSize,
+                          int  maxListSize,
+                          int  techToAdd,
+                          int  handleToAdd,
+                          int  typeToAdd)
+{
+  bool found = false;
+
+  for (int i = 0; i < listSize; i++)
+  {
+    if (techList[i] == techToAdd)
+    {
+      found = true;
+      break;
+    }
+  }
+
+  if (!found && listSize < maxListSize)
+  {
+    techList[listSize]   = techToAdd;
+    handleList[listSize] = handleToAdd;
+    typeList[listSize]   = typeToAdd;
+    return listSize + 1;
+  }
+
+  return listSize;
+} // addTechnology
+
+int nfcGetTechnologyTree (PNfcService pService,
+                          int         size,
+                          int        *pTechList,
+                          int        *pHandleList,
+                          int        *pTypeList)
+{
+  int index  = 0;
+  int handle = 1; // We have no specific support for handles here
+
+  DWORD type = pService->pTagInfo->tagType & NFC_IND_TYPE_TYPE_MASK;
+
+  // TODO later, support for more tags
+
+  switch (type)
+  {
+    case NFC_IND_TYPE_TAG_ISO14443A:
+    case NFC_IND_TYPE_TAG_DESFIRE_TYPE4:
+      index = addTechnology(pTechList,
+                            pHandleList,
+                            pTypeList,
+                            index,
+                            size,
+                            TARGET_TYPE_ISO14443_4,
+                            handle,
+                            type);
+      index = addTechnology(pTechList,
+                            pHandleList,
+                            pTypeList,
+                            index,
+                            size,
+                            TARGET_TYPE_ISO14443_3A,
+                            handle + 1,
+                            type);
+      break;
+
+    case NFC_IND_TYPE_TAG_14443B:
+      index = addTechnology(pTechList,
+                            pHandleList,
+                            pTypeList,
+                            index,
+                            size,
+                            TARGET_TYPE_ISO14443_4,
+                            handle,
+                            type);
+      index = addTechnology(pTechList,
+                            pHandleList,
+                            pTypeList,
+                            index,
+                            size,
+                            TARGET_TYPE_ISO14443_3B,
+                            handle + 1,
+                            type);
+      // dumpIso14443B(pService->pTagInfo->tagType);
+      break;
+
+    case NFC_IND_TYPE_TAG_15693:
+      index = addTechnology(pTechList,
+                            pHandleList,
+                            pTypeList,
+                            index,
+                            size,
+                            TARGET_TYPE_ISO15693,
+                            handle,
+                            type);
+      break;
+
+    case NFC_IND_TYPE_TAG_MIFARE_STD_1K:
+    case NFC_IND_TYPE_TAG_MIFARE_STD_4K:
+      index = addTechnology(pTechList,
+                            pHandleList,
+                            pTypeList,
+                            index,
+                            size,
+                            TARGET_TYPE_MIFARE_CLASSIC,
+                            handle,
+                            type);
+      index = addTechnology(pTechList,
+                            pHandleList,
+                            pTypeList,
+                            index,
+                            size,
+                            TARGET_TYPE_ISO14443_3A,
+                            handle,
+                            type);
+      break;
+
+    case NFC_IND_TYPE_TAG_ULTRALIGHT_TYPE2:
+      index = addTechnology(pTechList,
+                            pHandleList,
+                            pTypeList,
+                            index,
+                            size,
+                            TARGET_TYPE_MIFARE_UL,
+                            handle,
+                            type);
+      index = addTechnology(pTechList,
+                            pHandleList,
+                            pTypeList,
+                            index,
+                            size,
+                            TARGET_TYPE_ISO14443_3A,
+                            handle,
+                            type);
+      break;
+
+    case NFC_IND_TYPE_TAG_FELICA_TYPE3:
+      index = addTechnology(pTechList,
+                            pHandleList,
+                            pTypeList,
+                            index,
+                            size,
+                            TARGET_TYPE_FELICA,
+                            handle,
+                            type);
+      break;
+
+    case NFC_IND_TYPE_TAG_JEWEL_TYPE1:
+      index = addTechnology(pTechList,
+                            pHandleList,
+                            pTypeList,
+                            index,
+                            size,
+                            TARGET_TYPE_ISO14443_3A,
+                            handle,
+                            type);
+      break;
+
+    default:
+      index = addTechnology(pTechList,
+                            pHandleList,
+                            pTypeList,
+                            index,
+                            size,
+                            TARGET_TYPE_UNKNOWN,
+                            handle,
+                            type);
+      break;
+  } // switch
+
+  return index;
+} // nfcGetTechnologyTree
+
+
+PLlcpSocket nfcSocketCreate (JNIEnv *e, const char *pszClassName)
+{
+  PLlcpSocket pSocket = NULL;
+
+  do
+  {
+    pSocket = (PLlcpSocket) calloc(sizeof(*pSocket), 1);
+    if (!pSocket)
+    {
+      LOGE("Cannot alloc LLCP service socket for class <%s>", pszClassName);
+      break;
+    }
+
+    LOGV("New native socket %p for class <%s> created", pSocket, pszClassName);
+
+    socketNodeInit(&pSocket->listNode);
+
+    /* Create new NativeLlcpServiceSocket object */
+    pSocket->object = jniCreateObject(e, pszClassName);
+
+    if (!pSocket->object)
+    {
+      LOG("Llcp Socket object creation error");
+      free(pSocket);
+      pSocket = NULL;
+      break;
+    }
+  } while (FALSE);
+
+  return pSocket;
+} // nfcSocketCreate
+
+void nfcSocketDestroy (PLlcpSocket pSocket)
+{
+  LOG("enter nfcSocketDestroy()");
+
+  if (pSocket->object)
+  {
+    // free socket java object (if still exists)
+    JNIEnv *env = AquireJniEnv(gpService);
+
+    // set java object mHandle to zero. mHandle is checked in all
+    // native member functions to be != zero before any further
+    // checks are done. This protects us from calls into our code
+    // by leaking or late java-objects.
+
+    jclass   c = env->GetObjectClass(pSocket->object);
+    jfieldID f = env->GetFieldID(c, "mHandle", "I");
+    env->SetIntField(pSocket->object, f, 0);
+    env->DeleteLocalRef(c);
+
+    env->DeleteGlobalRef(pSocket->object);
+
+    pSocket->object = 0;
+  }
+  
+  // free ring-buffer; 
+  if (pSocket->rxBuffer)
+  {
+    delete pSocket->rxBuffer;
+    pSocket->rxBuffer = 0;
+  }
+
+  free(pSocket);
+
+  LOG("exit nfcSocketDestroy()");
+} // nfcSocketDestroy
+
+/*------------------------------------------------------------------*/
+/**
+ * @fn    nfcSocketDiscardList
+ *
+ * @brief Remove all objects from socket list and free allocated
+ *        memory
+ *
+ * @param PNfcService pService
+ *
+ *
+ * @return void
+ */
+/*------------------------------------------------------------------*/
+void nfcSocketDiscardList (PNfcService pService)
+{
+  LOG("nfcSocketDiscardList enter");
+  socketListAquire(&pService->sockets);
+
+  int numSockets = 0;
+
+  // for all sockets that exist:
+  while (pService->sockets.root)
+  {
+    PLlcpSocket sock = (PLlcpSocket) pService->sockets.root;
+
+    // unblock all waiting threads:
+    socketListInterrupt(&pService->sockets, &sock->listNode);
+
+    // remove from list:
+    if (socketListRemove(&pService->sockets, &sock->listNode))
+    {
+      // free resources
+      nfcSocketDestroy(sock);
+    }
+    numSockets++;
+  }
+
+  socketListRelease(&pService->sockets);
+  LOGV("nfcSocketDiscardList exit, %d sockets removed", numSockets);
+} // nfcSocketDiscardList
 
 /*
  * JNI Utils
  */
-JNIEnv *nfc_get_env()
+int jniCacheObject (JNIEnv *e, const char *pszClassName, jobject *pCachedObject)
 {
-    JNIEnv *e;
-    if (vm->GetEnv((void **)&e, JNI_VERSION_1_6) != JNI_OK) {
-        LOGE("Current thread is not attached to VM");
-        abort();
-    }
-    return e;
-}
+  jclass    cls;
+  jobject   obj;
+  jmethodID ctor;
 
-bool nfc_cb_data_init(nfc_jni_callback_data* pCallbackData, void* pContext)
+  cls = e->FindClass(pszClassName);
+  if (cls == NULL)
+  {
+    LOGE("! Find class <%s> error", pszClassName);
+    return -1;
+  }
+
+  ctor = e->GetMethodID(cls, "<init>", "()V");
+  obj  = e->NewObject(cls, ctor);
+  if (obj == NULL)
+  {
+    LOGV("! Create object for class <%s> failed", pszClassName);
+    return -1;
+  }
+
+  *pCachedObject = e->NewGlobalRef(obj);
+  if (*pCachedObject == NULL)
+  {
+    LOGE("Global ref for class <%s> failed", pszClassName);
+    e->DeleteLocalRef(obj);
+    return -1;
+  }
+
+  e->DeleteLocalRef(obj);
+
+  return 0;
+} // jniCacheObject
+
+jobject jniCreateObjectReference (JNIEnv *env, jobject pClassTemplate)
 {
-   /* Create semaphore */
-   if(sem_init(&pCallbackData->sem, 0, 0) == -1)
-   {
-      LOGE("Semaphore creation failed (errno=0x%08x)", errno);
-      return false;
-   }
+  LOGV("jniCreateObjectReference for env=%p and template %p", env, pClassTemplate);
 
-   /* Set default status value */
-   pCallbackData->status = NFCSTATUS_FAILED;
+  jobject obj;
 
-   /* Copy the context */
-   pCallbackData->pContext = pContext;
+  jclass objClass = env->GetObjectClass(pClassTemplate);
 
-   /* Add to active semaphore list */
-   if (!listAdd(&nfc_jni_get_monitor()->sem_list, pCallbackData))
-   {
-      LOGE("Failed to add the semaphore to the list");
-   }
+  if (env->ExceptionCheck())
+  {
+    LOG("! Get Object Class Error");
+    // kill_client(pService);
+    env->DeleteLocalRef(objClass);
+    return 0;
+  }
 
-   return true;
-}
+  //
+  // Create new target instance
+  //
+  obj = env->NewObject(objClass, env->GetMethodID(objClass, "<init>", "()V"));
 
-void nfc_cb_data_deinit(nfc_jni_callback_data* pCallbackData)
+  // smells, but...
+  jobject objRef = env->NewGlobalRef(obj);
+  env->DeleteLocalRef(obj);
+  env->DeleteLocalRef(objClass);
+
+  return objRef;
+} // jniCreateObjectReference
+
+jobject jniCreateObject (JNIEnv *e, const char *pszClassName)
 {
-   /* Destroy semaphore */
-   if (sem_destroy(&pCallbackData->sem))
-   {
-      LOGE("Failed to destroy semaphore (errno=0x%08x)", errno);
-   }
+  jobject obj;
 
-   /* Remove from active semaphore list */
-   if (!listRemove(&nfc_jni_get_monitor()->sem_list, pCallbackData))
-   {
-      LOGE("Failed to remove semaphore from the list");
-   }
+  jclass objClass = e->FindClass(pszClassName);
 
-}
+  if (!objClass)
+  {
+    LOGE("Find class failed for <%s>", pszClassName);
+    return 0;
+  }
 
-void nfc_cb_data_releaseAll()
+  obj = e->NewObject(objClass, e->GetMethodID(objClass, "<init>", "()V"));
+  if (!obj)
+  {
+    LOGE("Create object <%s> failed", pszClassName);
+    e->DeleteLocalRef(objClass);
+    return 0;
+  }
+
+  jobject refObj = e->NewGlobalRef(obj);
+  LOGV("new JAVA object %p created, cached reference %p", obj, refObj);
+  e->DeleteLocalRef(obj);
+  e->DeleteLocalRef(objClass);
+
+  return refObj;
+} // jniCreateObject
+
+void jniSetByteArray (JNIEnv *env, jobject obj, jfieldID id, PBYTE pSource, int length)
 {
-   nfc_jni_callback_data* pCallbackData;
-
-   while (listGetAndRemoveNext(&nfc_jni_get_monitor()->sem_list, (void**)&pCallbackData))
-   {
-      pCallbackData->status = NFCSTATUS_FAILED;
-      sem_post(&pCallbackData->sem);
-   }
-}
-
-int nfc_jni_cache_object(JNIEnv *e, const char *clsname,
-   jobject *cached_obj)
-{
-   jclass cls;
-   jobject obj;
-   jmethodID ctor;
-
-   cls = e->FindClass(clsname);
-   if(cls == NULL)
-   {
-      return -1;
-      LOGD("Find class error\n");
-   }
-
-
-   ctor = e->GetMethodID(cls, "<init>", "()V");
-
-   obj = e->NewObject(cls, ctor);
-   if(obj == NULL)
-   {
-      return -1;
-      LOGD("Create object error\n");
-   }
-
-   *cached_obj = e->NewGlobalRef(obj);
-   if(*cached_obj == NULL)
-   {
-      e->DeleteLocalRef(obj);
-      LOGD("Global ref error\n");
-      return -1;
-   }
-
-   e->DeleteLocalRef(obj);
-
-   return 0;
-}
-
-
-struct nfc_jni_native_data* nfc_jni_get_nat(JNIEnv *e, jobject o)
-{
-   jclass c;
-   jfieldID f;
-
-   /* Retrieve native structure address */
-   c = e->GetObjectClass(o);
-   f = e->GetFieldID(c, "mNative", "I");
-   return (struct nfc_jni_native_data*)e->GetIntField(o, f);
-}
-
-struct nfc_jni_native_data* nfc_jni_get_nat_ext(JNIEnv *e)
-{
-   return exported_nat;
-}
-
-static nfc_jni_native_monitor_t *nfc_jni_native_monitor = NULL;
-
-nfc_jni_native_monitor_t* nfc_jni_init_monitor(void)
-{
-
-   pthread_mutexattr_t recursive_attr;
-
-   pthread_mutexattr_init(&recursive_attr);
-   pthread_mutexattr_settype(&recursive_attr, PTHREAD_MUTEX_RECURSIVE_NP);
-
-   if(nfc_jni_native_monitor == NULL)
-   {
-      nfc_jni_native_monitor = (nfc_jni_native_monitor_t*)malloc(sizeof(nfc_jni_native_monitor_t));
-   }
-
-   if(nfc_jni_native_monitor != NULL)
-   {
-      memset(nfc_jni_native_monitor, 0, sizeof(nfc_jni_native_monitor_t));
-
-      if(pthread_mutex_init(&nfc_jni_native_monitor->reentrance_mutex, &recursive_attr) == -1)
-      {
-         LOGE("NFC Manager Reentrance Mutex creation returned 0x%08x", errno);
-         return NULL;
-      }
-
-      if(pthread_mutex_init(&nfc_jni_native_monitor->concurrency_mutex, NULL) == -1)
-      {
-         LOGE("NFC Manager Concurrency Mutex creation returned 0x%08x", errno);
-         return NULL;
-      }
-
-      if(!listInit(&nfc_jni_native_monitor->sem_list))
-      {
-         LOGE("NFC Manager Semaphore List creation failed");
-         return NULL;
-      }
-
-      LIST_INIT(&nfc_jni_native_monitor->incoming_socket_head);
-
-      if(pthread_mutex_init(&nfc_jni_native_monitor->incoming_socket_mutex, NULL) == -1)
-      {
-         LOGE("NFC Manager incoming socket mutex creation returned 0x%08x", errno);
-         return NULL;
-      }
-
-      if(pthread_cond_init(&nfc_jni_native_monitor->incoming_socket_cond, NULL) == -1)
-      {
-         LOGE("NFC Manager incoming socket condition creation returned 0x%08x", errno);
-         return NULL;
-      }
-
-}
-
-   return nfc_jni_native_monitor;
-} 
-
-nfc_jni_native_monitor_t* nfc_jni_get_monitor(void)
-{
-   return nfc_jni_native_monitor;
-}
-   
-
-phLibNfc_Handle nfc_jni_get_p2p_device_handle(JNIEnv *e, jobject o)
-{
-   jclass c;
-   jfieldID f;
-
-   c = e->GetObjectClass(o);
-   f = e->GetFieldID(c, "mHandle", "I");
-
-   return e->GetIntField(o, f);
-}
-
-jshort nfc_jni_get_p2p_device_mode(JNIEnv *e, jobject o)
-{
-   jclass c;
-   jfieldID f;
-
-   c = e->GetObjectClass(o);
-   f = e->GetFieldID(c, "mMode", "S");
-
-   return e->GetShortField(o, f);
-}
-
-
-int nfc_jni_get_connected_tech_index(JNIEnv *e, jobject o)
-{
-
-   jclass c;
-   jfieldID f;
-
-   c = e->GetObjectClass(o);
-   f = e->GetFieldID(c, "mConnectedTechIndex", "I");
-
-   return e->GetIntField(o, f);
-
-}
-
-jint nfc_jni_get_connected_technology(JNIEnv *e, jobject o)
-{
-   jclass c;
-   jfieldID f;
-   int connectedTech = -1;
-
-   int connectedTechIndex = nfc_jni_get_connected_tech_index(e,o);
-   jintArray techTypes = nfc_jni_get_nfc_tag_type(e, o);
-
-   if ((connectedTechIndex != -1) && (techTypes != NULL) &&
-           (connectedTechIndex < e->GetArrayLength(techTypes))) {
-       jint* technologies = e->GetIntArrayElements(techTypes, 0);
-       if (technologies != NULL) {
-           connectedTech = technologies[connectedTechIndex];
-           e->ReleaseIntArrayElements(techTypes, technologies, JNI_ABORT);
-       }
-   }
-
-   return connectedTech;
-
-}
-
-jint nfc_jni_get_connected_technology_libnfc_type(JNIEnv *e, jobject o)
-{
-   jclass c;
-   jfieldID f;
-   jint connectedLibNfcType = -1;
-
-   int connectedTechIndex = nfc_jni_get_connected_tech_index(e,o);
-   c = e->GetObjectClass(o);
-   f = e->GetFieldID(c, "mTechLibNfcTypes", "[I");
-   jintArray libNfcTypes =  (jintArray) e->GetObjectField(o, f);
-
-   if ((connectedTechIndex != -1) && (libNfcTypes != NULL) &&
-           (connectedTechIndex < e->GetArrayLength(libNfcTypes))) {
-       jint* types = e->GetIntArrayElements(libNfcTypes, 0);
-       if (types != NULL) {
-           connectedLibNfcType = types[connectedTechIndex];
-           e->ReleaseIntArrayElements(libNfcTypes, types, JNI_ABORT);
-       }
-   }
-   return connectedLibNfcType;
-
-}
-
-phLibNfc_Handle nfc_jni_get_connected_handle(JNIEnv *e, jobject o)
-{
-   jclass c;
-   jfieldID f;
-
-   c = e->GetObjectClass(o);
-   f = e->GetFieldID(c, "mConnectedHandle", "I");
-
-   return e->GetIntField(o, f);
-}
-
-phLibNfc_Handle nfc_jni_get_nfc_socket_handle(JNIEnv *e, jobject o)
-{
-   jclass c;
-   jfieldID f;
-
-   c = e->GetObjectClass(o);
-   f = e->GetFieldID(c, "mHandle", "I");
-
-   return e->GetIntField(o, f);
-}
-
-jintArray nfc_jni_get_nfc_tag_type(JNIEnv *e, jobject o)
-{
-  jclass c;
-  jfieldID f;
-  jintArray techtypes;
-   
-  c = e->GetObjectClass(o);
-  f = e->GetFieldID(c, "mTechList","[I");
-
-  /* Read the techtypes  */
-  techtypes = (jintArray) e->GetObjectField(o, f);
-
-  return techtypes;
-}
-
-
-
-//Display status code
-const char* nfc_jni_get_status_name(NFCSTATUS status)
-{
-   #define STATUS_ENTRY(status) { status, #status }
- 
-   struct status_entry {
-      NFCSTATUS   code;
-      const char  *name;
-   };
-
-   const struct status_entry sNameTable[] = {
-      STATUS_ENTRY(NFCSTATUS_SUCCESS),
-      STATUS_ENTRY(NFCSTATUS_FAILED),
-      STATUS_ENTRY(NFCSTATUS_INVALID_PARAMETER),
-      STATUS_ENTRY(NFCSTATUS_INSUFFICIENT_RESOURCES),
-      STATUS_ENTRY(NFCSTATUS_TARGET_LOST),
-      STATUS_ENTRY(NFCSTATUS_INVALID_HANDLE),
-      STATUS_ENTRY(NFCSTATUS_MULTIPLE_TAGS),
-      STATUS_ENTRY(NFCSTATUS_ALREADY_REGISTERED),
-      STATUS_ENTRY(NFCSTATUS_FEATURE_NOT_SUPPORTED),
-      STATUS_ENTRY(NFCSTATUS_SHUTDOWN),
-      STATUS_ENTRY(NFCSTATUS_ABORTED),
-      STATUS_ENTRY(NFCSTATUS_REJECTED ),
-      STATUS_ENTRY(NFCSTATUS_NOT_INITIALISED),
-      STATUS_ENTRY(NFCSTATUS_PENDING),
-      STATUS_ENTRY(NFCSTATUS_BUFFER_TOO_SMALL),
-      STATUS_ENTRY(NFCSTATUS_ALREADY_INITIALISED),
-      STATUS_ENTRY(NFCSTATUS_BUSY),
-      STATUS_ENTRY(NFCSTATUS_TARGET_NOT_CONNECTED),
-      STATUS_ENTRY(NFCSTATUS_MULTIPLE_PROTOCOLS),
-      STATUS_ENTRY(NFCSTATUS_DESELECTED),
-      STATUS_ENTRY(NFCSTATUS_INVALID_DEVICE),
-      STATUS_ENTRY(NFCSTATUS_MORE_INFORMATION),
-      STATUS_ENTRY(NFCSTATUS_RF_TIMEOUT),
-      STATUS_ENTRY(NFCSTATUS_RF_ERROR),
-      STATUS_ENTRY(NFCSTATUS_BOARD_COMMUNICATION_ERROR),
-      STATUS_ENTRY(NFCSTATUS_INVALID_STATE),
-      STATUS_ENTRY(NFCSTATUS_NOT_REGISTERED),
-      STATUS_ENTRY(NFCSTATUS_RELEASED),
-      STATUS_ENTRY(NFCSTATUS_NOT_ALLOWED),
-      STATUS_ENTRY(NFCSTATUS_INVALID_REMOTE_DEVICE),
-      STATUS_ENTRY(NFCSTATUS_SMART_TAG_FUNC_NOT_SUPPORTED),
-      STATUS_ENTRY(NFCSTATUS_READ_FAILED),
-      STATUS_ENTRY(NFCSTATUS_WRITE_FAILED),
-      STATUS_ENTRY(NFCSTATUS_NO_NDEF_SUPPORT),
-      STATUS_ENTRY(NFCSTATUS_EOF_NDEF_CONTAINER_REACHED),
-      STATUS_ENTRY(NFCSTATUS_INVALID_RECEIVE_LENGTH),
-      STATUS_ENTRY(NFCSTATUS_INVALID_FORMAT),
-      STATUS_ENTRY(NFCSTATUS_INSUFFICIENT_STORAGE),
-      STATUS_ENTRY(NFCSTATUS_FORMAT_ERROR),
-   };
-
-   int i = sizeof(sNameTable)/sizeof(status_entry);
- 
-   while(i>0)
-   {
-      i--;
-      if (sNameTable[i].code == PHNFCSTATUS(status))
-      {
-         return sNameTable[i].name;
-      }
-   }
-
-   return "UNKNOWN";
-}
-
-int addTechIfNeeded(int *techList, int* handleList, int* typeList, int listSize,
-        int maxListSize, int techToAdd, int handleToAdd, int typeToAdd) {
-    bool found = false;
-    for (int i = 0; i < listSize; i++) {
-        if (techList[i] == techToAdd) {
-            found = true;
-            break;
-        }
-    }
-    if (!found && listSize < maxListSize) {
-        techList[listSize] = techToAdd;
-        handleList[listSize] = handleToAdd;
-        typeList[listSize] = typeToAdd;
-        return listSize + 1;
-    }
-    else {
-        return listSize;
-    }
-}
-
-
-#define MAX_NUM_TECHNOLOGIES 32
-
-/*
- *  Utility to get a technology tree and a corresponding handle list from a detected tag.
+  jbyteArray jArray = env->NewByteArray(length);
+
+  if (length)
+  {
+    env->SetByteArrayRegion(jArray, 0, length, (jbyte *) pSource);
+  }
+  else
+  {
+    LOGV("Unable to create Byte-Array of size %d\n", length);
+  }
+
+  env->SetObjectField(obj, id, jArray);
+  env->DeleteLocalRef(jArray);
+} // jniSetByteArray
+
+/*------------------------------------------------------------------*/
+/**
+ * @fn    jniSetIntArray
+ *
+ * @brief
+ *
+ * @param PJniObject pObject
+ * @param jfieldID field
+ * @param int * pSource
+ * @param int length
+ *
+ *
+ * @return void
  */
-void nfc_jni_get_technology_tree(JNIEnv* e, phLibNfc_RemoteDevList_t* devList,
-        uint8_t count, jintArray* techList, jintArray* handleList,
-        jintArray* libnfcTypeList)
+/*------------------------------------------------------------------*/
+void jniSetIntArray (JNIEnv *env, jobject obj, jfieldID field, int *pSource, int length)
 {
-   int technologies[MAX_NUM_TECHNOLOGIES];
-   int handles[MAX_NUM_TECHNOLOGIES];
-   int libnfctypes[MAX_NUM_TECHNOLOGIES];
+  jintArray arrayList;
+  jint     *jItem;
 
-   int index = 0;
-   // TODO: This counts from up to down because on multi-protocols, the
-   // ISO handle is usually the second, and we prefer the ISO. Should implement
-   // a method to find the "preferred handle order" and use that instead,
-   // since we shouldn't have dependencies on the tech list ordering.
-   for (int target = count - 1; target >= 0; target--) {
-       int type = devList[target].psRemoteDevInfo->RemDevType;
-       int handle = devList[target].hTargetDev;
-       switch (type)
-       {
-          case phNfc_eISO14443_A_PICC:
-          case phNfc_eISO14443_4A_PICC:
-            {
-              index = addTechIfNeeded(technologies, handles, libnfctypes, index,
-                      MAX_NUM_TECHNOLOGIES, TARGET_TYPE_ISO14443_4, handle, type);
-              break;
-            }
-          case phNfc_eISO14443_4B_PICC:
-            {
-              index = addTechIfNeeded(technologies, handles, libnfctypes, index,
-                      MAX_NUM_TECHNOLOGIES, TARGET_TYPE_ISO14443_4, handle, type);
-              index = addTechIfNeeded(technologies, handles, libnfctypes, index,
-                      MAX_NUM_TECHNOLOGIES, TARGET_TYPE_ISO14443_3B, handle, type);
-            }break;
-          case phNfc_eISO14443_3A_PICC:
-            {
-              index = addTechIfNeeded(technologies, handles, libnfctypes,
-                      index, MAX_NUM_TECHNOLOGIES, TARGET_TYPE_ISO14443_3A, handle, type);
-            }break;
-          case phNfc_eISO14443_B_PICC:
-            {
-              // TODO a bug in libnfc will cause 14443-3B only cards
-              // to be returned as this type as well, but these cards
-              // are very rare. Hence assume it's -4B
-              index = addTechIfNeeded(technologies, handles, libnfctypes,
-                      index, MAX_NUM_TECHNOLOGIES, TARGET_TYPE_ISO14443_4, handle, type);
-              index = addTechIfNeeded(technologies, handles, libnfctypes,
-                      index, MAX_NUM_TECHNOLOGIES, TARGET_TYPE_ISO14443_3B, handle, type);
-            }break;
-          case phNfc_eISO15693_PICC:
-            {
-              index = addTechIfNeeded(technologies, handles, libnfctypes,
-                      index, MAX_NUM_TECHNOLOGIES, TARGET_TYPE_ISO15693, handle, type);
-            }break;
-          case phNfc_eMifare_PICC:
-            {
-              // We don't want to be too clever here; libnfc has already determined
-              // it's a Mifare, so we only check for UL, for all other tags
-              // we assume it's a mifare classic. This should make us more
-              // future-proof.
-              int sak = devList[target].psRemoteDevInfo->RemoteDevInfo.Iso14443A_Info.Sak;
-              switch(sak)
-              {
-                case 0x00:
-                  // could be UL or UL-C
-                  index = addTechIfNeeded(technologies, handles, libnfctypes,
-                          index, MAX_NUM_TECHNOLOGIES, TARGET_TYPE_MIFARE_UL, handle, type);
-                  break;
-                default:
-                  index = addTechIfNeeded(technologies, handles, libnfctypes,
-                          index, MAX_NUM_TECHNOLOGIES, TARGET_TYPE_MIFARE_CLASSIC, handle, type);
-                  break;
-              }
-            }break;
-          case phNfc_eFelica_PICC:
-            {
-              index = addTechIfNeeded(technologies, handles, libnfctypes,
-                      index, MAX_NUM_TECHNOLOGIES, TARGET_TYPE_FELICA, handle, type);
-            }break;
-          case phNfc_eJewel_PICC:
-            {
-              // Jewel represented as NfcA
-              index = addTechIfNeeded(technologies, handles, libnfctypes,
-                      index, MAX_NUM_TECHNOLOGIES, TARGET_TYPE_ISO14443_3A, handle, type);
-            }break;
-          default:
-            {
-              index = addTechIfNeeded(technologies, handles, libnfctypes,
-                      index, MAX_NUM_TECHNOLOGIES, TARGET_TYPE_UNKNOWN, handle, type);
-            }
-        }
-   }
+  arrayList = env->NewIntArray(length);
+  if (arrayList)
+  {
+    jItem = env->GetIntArrayElements(arrayList, NULL);
 
-   // Build the Java arrays
-   if (techList != NULL) {
-       *techList = e->NewIntArray(index);
-       e->SetIntArrayRegion(*techList, 0, index, technologies);
-   }
+    for (int i = 0; i < length; i++)
+    {
+      jItem[i] = pSource[i];
+    }
 
-   if (handleList != NULL) {
-       *handleList = e->NewIntArray(index);
-       e->SetIntArrayRegion(*handleList, 0, index, handles);
-   }
+    env->SetObjectField(obj, field, arrayList);
+    env->ReleaseIntArrayElements(arrayList, jItem, 0);
+    env->DeleteLocalRef(arrayList);
+  }
+  else
+  {
+    LOGV("Unable to create Int-Array of size %d\n", length);
+  }
+} // jniSetIntArray
 
-   if (libnfcTypeList != NULL) {
-       *libnfcTypeList = e->NewIntArray(index);
-       e->SetIntArrayRegion(*libnfcTypeList, 0, index, libnfctypes);
-   }
+/*------------------------------------------------------------------*/
+/**
+ * @fn    nfcSocketGetReference
+ *
+ * @brief Get own socket object for given JAVA reference. We assumes
+ *        this JAVA object contains field with name 'mHandle'
+ *
+ * @param JNIEnv * e
+ * @param jobject o
+ *
+ *
+ * @return PLlcpSocket
+ */
+/*------------------------------------------------------------------*/
+PLlcpSocket nfcSocketGetReference (JNIEnv *e, jobject o)
+{
+  jclass      c       = e->GetObjectClass(o);
+  jfieldID    f       = e->GetFieldID(c, "mHandle", "I");
+  PLlcpSocket pSocket = (PLlcpSocket) e->GetIntField(o, f);
+
+  // Validate socket. This socket must exits in our list
+  if (!socketListExists(&gpService->sockets, &pSocket->listNode))
+  {
+    LOGE("! Socket object %p not in socket list", pSocket);
+    pSocket = NULL;
+  }
+
+  if (pSocket)
+  {
+    // aquire ownership
+    if (!socketNodeAquire(&pSocket->listNode))
+    {
+      // failed - someone already interrupting on that socket.
+      pSocket = NULL;
+    }
+  }
+
+  return pSocket;
+} // nfcSocketGetReference
+
+PNfcService nfcGetServiceInstance (JNIEnv *e, jobject o)
+{
+  jclass   c;
+  jfieldID f;
+
+  /* Retrieve pNative structure address */
+  c = e->GetObjectClass(o);
+  f = e->GetFieldID(c, "mNative", "I");
+  e->DeleteLocalRef(c);
+  return (PNfcService) e->GetIntField(o, f);
 }
 
+/*------------------------------------------------------------------*/
+/**
+ * @fn    JNIRegisterFields
+ *
+ * @brief register multiple java fields. this is what JNIEnv::RegisterNatives
+ *        does, but for members instead of functions.
+ *
+ * @param
+ *
+ * @return false if anything fails
+ */
+/*------------------------------------------------------------------*/
+bool JNIRegisterFields (JNIEnv *e, jclass cls, const JNIFields *fields, size_t numFields)
+{
+  for (size_t i = 0; i < numFields; i++)
+  {
+    jfieldID id = e->GetFieldID(cls, fields[i].fieldName, fields[i].fieldType);
+    //LOGV("register field %s, status = %d", fields[i].fieldName, id != 0);
+    
+    *fields[i].field = id;
+    if (!*fields[i].field)
+    {
+      return false;
+    }
+  }
+  return true;
+} // JNIRegisterFields
+
+/*------------------------------------------------------------------*/
+/**
+ * @fn    jniGetSystemProperty
+ *
+ * @brief get system propperty from Android. Since cutils/properties.h
+ *        is not part of the NDK environment we load the library directly
+ *        and call it. this will work as long as the prototype of property_get does
+ *        not change.
+ *
+ *
+ * @param PNFCMSG pMessage Message descriptor that contains all data for processing.
+ *
+ * @return void
+ */
+/*------------------------------------------------------------------*/
+
+BOOL jniGetSystemProperty (const char *key, char *value)
+{
+  typedef int (*func)(const char *key,
+                      const char *value,
+                      const char *defaultvalue);
+
+  BOOL  result = false;
+  void *lib    = dlopen("libcutils.so", RTLD_NOW);
+  *value = 0;
+
+  if (lib)
+  {
+    func getprop = (func) dlsym(lib, "property_get");
+    if (getprop)
+    {
+      getprop(key, value, "unknown");
+      result = true;
+    }
+    else
+    {
+      LOG("!!! unable to get entry-point property_get in libcutils.so");
+    }
+    dlclose(lib);
+  }
+  else
+  {
+    LOG("!!! unable top open library libcutils.so");
+  }
+
+  return result;
+} // jniGetSystemProperty
+
+/*------------------------------------------------------------------*/
+/**
+ * @fn    aquireIoBuffer
+ *
+ * @brief aquire exclusive access to the global io-buffer managed by the
+ *        service-layer. Note: The buffer has a guaranteed size of 64kb,
+ *        so for most NFC calls we can assume that allocation never fails.
+ *
+ * @param size_t  size  minimal size of the buffer.
+ *
+ * @return ptr to memory or NULL.
+ */
+/*------------------------------------------------------------------*/
+PBYTE aquireIoBuffer (size_t size)
+{
+  if (gpService->ioBufferSize < size)
+  {
+    // reallocate
+    PBYTE temp = (PBYTE) malloc(size);
+    if (temp)
+    {
+      LOGV("reallocated shared IO-buffer to %d bytes", size);
+      free(gpService->pIoBuffer);
+      gpService->pIoBuffer    = temp;
+      gpService->ioBufferSize = size;
+    }
+    else
+    {
+      LOGE("reallocation of shared IO-buffer for %d bytes failed", size);
+      return NULL;
+    }
+  }
+
+  return gpService->pIoBuffer;
+} // aquireIoBuffer
+
+/*------------------------------------------------------------------*/
+/*------------------------------------------------------------------*/
+/*------------------------------------------------------------------*/
+
+bool jniRegisterNativeMethods (JNIEnv                *env,
+                               const char            *className,
+                               const JNINativeMethod *gMethods,
+                               int                    numMethods)
+{
+  bool succ = true;
+
+  for (int i = 0; i < numMethods; i++)
+  {
+    //LOGV("Register method %s, cls=%s", gMethods[i].name, className);
+    succ = (env->RegisterNatives(env->FindClass(className), &gMethods[i], 1) == 0);
+    if (!succ)
+      break;
+  }
+  return succ;
+} /* jniRegisterNativeMethods */
+
+
+/*------------------------------------------------------------------*/
+/**
+ * @fn    CleanupLastTag
+ *
+ * @brief Removes the instance stored at pService->lastSignaledTag.
+ *
+ *
+ * @param pService      nfcService instance
+ * @param env           current java environment
+ *
+ * @return -
+ */
+/*------------------------------------------------------------------*/
+void CleanupLastTag (PNfcService pService, JNIEnv *env)
+{
+  if (pService->lastSignaledTag)
+  {
+    env->SetIntField(pService->lastSignaledTag, NativeTagFields.mConnectedHandle, -1);
+    env->SetIntField(pService->lastSignaledTag, NativeTagFields.mIsPresent,        0);
+    env->DeleteGlobalRef(pService->lastSignaledTag);
+    pService->lastSignaledTag = 0;
+    pService->pTagInfo->tagType = 0;
+  }
+  if (pService->lastSignaledP2PDevice)
+  {
+    env->SetIntField(pService->lastSignaledP2PDevice, NativeP2PDeviceFields.mHandle, -1);
+    env->DeleteGlobalRef(pService->lastSignaledP2PDevice);
+    pService->lastSignaledP2PDevice = 0;
+  }
+} /* CleanupLastTag */
+
+/*------------------------------------------------------------------*/
+/**
+ * @fn    nfcIsSocketAlive
+ *
+ * @brief Checks if the object o is alive. This function must only
+ *        be called on NativeLlcpServiceSocket and NativeLlcpSocket
+ *        objects (won't be checked).
+ *
+ *        The test itself is done by reading out the mHandle member.
+ *
+ * @param env           current java environment
+ * @param o             object to test-
+ *
+ * @return -
+ */
+/*------------------------------------------------------------------*/
+BOOL nfcIsSocketAlive (JNIEnv *env, jobject o)
+{
+  int      handle = 0;
+  jclass   c      = env->GetObjectClass(o);
+  jfieldID f      = env->GetFieldID(c, "mHandle", "I");
+
+  if (f != NULL)
+  {
+    handle = env->GetIntField(o, f);
+  }
+  else
+  {
+    LOGV("Warning: java-object %p does not has a member mHandle", o);
+  }
+
+  env->DeleteLocalRef(c);
+  return (handle != 0);
+} /* nfcIsSocketAlive */
 } // namespace android

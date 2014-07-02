@@ -105,6 +105,8 @@ import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.HashMap;
 
+import android.app.WallpaperManager;
+
 /**
  * Default launcher application.
  */
@@ -351,6 +353,18 @@ public final class Launcher extends Activity
         // On large interfaces, we want the screen to auto-rotate based on the current orientation
         if (LauncherApplication.isScreenLarge() || Build.TYPE.contentEquals("eng")) {
             setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        }
+
+        setWallpaper();
+    }
+
+    private void setWallpaper() {
+        try {
+            WallpaperManager wpm = (WallpaperManager) getSystemService(
+                    Context.WALLPAPER_SERVICE);
+            wpm.setResource(R.drawable.default_wallpaper);
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to set wallpaper: " + e);
         }
     }
 
@@ -639,6 +653,7 @@ public final class Launcher extends Activity
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
+
         final int uniChar = event.getUnicodeChar();
         final boolean handled = super.onKeyDown(keyCode, event);
         final boolean isKeyNotWhitespace = uniChar > 0 && !Character.isWhitespace(uniChar);
@@ -659,6 +674,14 @@ public final class Launcher extends Activity
         // Eat the long press event so the keyboard doesn't come up.
         if (keyCode == KeyEvent.KEYCODE_MENU && event.isLongPress()) {
             return true;
+        }
+
+        else if (keyCode == KeyEvent.KEYCODE_PAGE_DOWN) {
+            int nextPage = Math.max(0, mWorkspace.getCurrentPage() - 1);
+            mWorkspace.setCurrentPage(nextPage);
+        } else if (keyCode == KeyEvent.KEYCODE_PAGE_UP) {
+            int nextPage = Math.min(mWorkspace.getChildCount() - 1, mWorkspace.getCurrentPage() + 1);
+            mWorkspace.setCurrentPage(nextPage);
         }
 
         return handled;
@@ -1959,7 +1982,7 @@ public final class Launcher extends Activity
                 // User long pressed on empty space
                 mWorkspace.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS,
                         HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING);
-                startWallpaper();
+                // startWallpaper();
             } else {
                 if (!(itemUnderLongClick instanceof Folder)) {
                     // User long pressed on an item

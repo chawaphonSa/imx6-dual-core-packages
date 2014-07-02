@@ -63,6 +63,8 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 
+import android.graphics.Color;
+
 /**
  * A simple callback interface which also provides the results of the task.
  */
@@ -265,6 +267,8 @@ public class AppsCustomizePagedView extends PagedViewWithDraggableItems implemen
         mWidgetPreviewIconPaddedDimension =
             (int) (mAppIconSize * (1 + (2 * sWidgetPreviewIconPaddingPercentage)));
         mFadeInAdjacentScreens = false;
+
+        this.setBackgroundColor(Color.WHITE);
     }
 
     @Override
@@ -1359,12 +1363,13 @@ public class AppsCustomizePagedView extends PagedViewWithDraggableItems implemen
                         v.setPivotY(pageHeight / 2.0f);
                         v.setPivotX(pageWidth / 2.0f);
                         v.setRotationY(0f);
+                        scale = 1.0f;
                     }
                 }
 
                 v.setTranslationX(translationX);
-                v.setScaleX(scale);
-                v.setScaleY(scale);
+                // v.setScaleX(scale);
+                // v.setScaleY(scale);
                 v.setAlpha(alpha);
 
                 // If the view has 0 alpha, we set it to be invisible so as to prevent

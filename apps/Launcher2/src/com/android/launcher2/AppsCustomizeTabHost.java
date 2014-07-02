@@ -37,6 +37,8 @@ import com.android.launcher.R;
 
 import java.util.ArrayList;
 
+import android.graphics.Color;
+
 public class AppsCustomizeTabHost extends TabHost implements LauncherTransitionable,
         TabHost.OnTabChangeListener  {
     static final String LOG_TAG = "AppsCustomizeTabHost";
@@ -59,6 +61,7 @@ public class AppsCustomizeTabHost extends TabHost implements LauncherTransitiona
     public AppsCustomizeTabHost(Context context, AttributeSet attrs) {
         super(context, attrs);
         mLayoutInflater = LayoutInflater.from(context);
+        this.setBackgroundColor(Color.WHITE);
     }
 
     /**
@@ -94,6 +97,8 @@ public class AppsCustomizeTabHost extends TabHost implements LauncherTransitiona
                 findViewById(R.id.apps_customize_pane_content);
         mTabs = tabs;
         mTabsContainer = tabsContainer;
+        mTabs.setBackgroundColor(Color.WHITE);
+        mTabsContainer.setBackgroundColor(Color.WHITE);
         mAppsCustomizePane = appsCustomizePane;
         mAnimationBuffer = (FrameLayout) findViewById(R.id.animation_buffer);
         mContent = (LinearLayout) findViewById(R.id.apps_customize_content);

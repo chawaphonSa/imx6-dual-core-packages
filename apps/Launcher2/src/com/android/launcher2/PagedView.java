@@ -875,6 +875,7 @@ public abstract class PagedView extends ViewGroup {
      * Return true if a tap at (x, y) should trigger a flip to the previous page.
      */
     protected boolean hitsPreviousPage(float x, float y) {
+        
         return (x < getRelativeChildOffset(mCurrentPage) - mPageSpacing);
     }
 
@@ -915,7 +916,7 @@ public abstract class PagedView extends ViewGroup {
                  * whether the user has moved far enough from his original down touch.
                  */
                 if (mActivePointerId != INVALID_POINTER) {
-                    determineScrollingStart(ev);
+                    // determineScrollingStart(ev);
                     break;
                 }
                 // if mActivePointerId is INVALID_POINTER, then we must have missed an ACTION_DOWN
@@ -944,7 +945,7 @@ public abstract class PagedView extends ViewGroup {
                  */
                 final int xDist = Math.abs(mScroller.getFinalX() - mScroller.getCurrX());
                 final boolean finishedScrolling = (mScroller.isFinished() || xDist < mTouchSlop);
-                if (finishedScrolling) {
+                if (true) {
                     mTouchState = TOUCH_STATE_REST;
                     mScroller.abortAnimation();
                 } else {
@@ -971,6 +972,19 @@ public abstract class PagedView extends ViewGroup {
                 mAllowLongPress = false;
                 mActivePointerId = INVALID_POINTER;
                 releaseVelocityTracker();
+                float lastX = ev.getX();
+                int offset = (int)lastX - (int)mLastMotionX;
+                if (offset > 100) {
+                    int nextPage = Math.max(0, mCurrentPage - 1);
+                    if (nextPage != mCurrentPage) {
+                        setCurrentPage(nextPage);
+                    }
+                } else if (offset < -100) {
+                    int nextPage = Math.min(getChildCount() - 1, mCurrentPage + 1);
+                    if (nextPage != mCurrentPage) {
+                        setCurrentPage(nextPage);
+                    }
+                }
                 break;
 
             case MotionEvent.ACTION_POINTER_UP:
@@ -1181,7 +1195,7 @@ public abstract class PagedView extends ViewGroup {
                     mTouchX += deltaX;
                     mSmoothingTime = System.nanoTime() / NANOTIME_DIV;
                     if (!mDeferScrollUpdate) {
-                        scrollBy((int) deltaX, 0);
+                        // scrollBy((int) deltaX, 0);
                         if (DEBUG) Log.d(TAG, "onTouchEvent().Scrolling: " + deltaX);
                     } else {
                         invalidate();
@@ -1192,7 +1206,7 @@ public abstract class PagedView extends ViewGroup {
                     awakenScrollBars();
                 }
             } else {
-                determineScrollingStart(ev);
+                // determineScrollingStart(ev);
             }
             break;
 
@@ -1246,7 +1260,8 @@ public abstract class PagedView extends ViewGroup {
                 // we can just page
                 int nextPage = Math.max(0, mCurrentPage - 1);
                 if (nextPage != mCurrentPage) {
-                    snapToPage(nextPage);
+                    // snapToPage(nextPage);
+                    setCurrentPage(nextPage);
                 } else {
                     snapToDestination();
                 }
@@ -1256,7 +1271,8 @@ public abstract class PagedView extends ViewGroup {
                 // we can just page
                 int nextPage = Math.min(getChildCount() - 1, mCurrentPage + 1);
                 if (nextPage != mCurrentPage) {
-                    snapToPage(nextPage);
+                    // snapToPage(nextPage);
+                    setCurrentPage(nextPage);
                 } else {
                     snapToDestination();
                 }
@@ -1461,7 +1477,8 @@ public abstract class PagedView extends ViewGroup {
     }
 
     protected void snapToPage(int whichPage) {
-        snapToPage(whichPage, PAGE_SNAP_ANIMATION_DURATION);
+        // snapToPage(whichPage, PAGE_SNAP_ANIMATION_DURATION);
+        setCurrentPage(whichPage);
     }
 
     protected void snapToPage(int whichPage, int duration) {

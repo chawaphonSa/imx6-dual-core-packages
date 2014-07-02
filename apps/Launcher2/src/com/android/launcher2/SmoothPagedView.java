@@ -135,7 +135,7 @@ public abstract class SmoothPagedView extends PagedView {
         int duration = (screenDelta + 1) * 100;
 
         if (!mScroller.isFinished()) {
-            mScroller.abortAnimation();
+            // mScroller.abortAnimation();
         }
 
         if (settle) {

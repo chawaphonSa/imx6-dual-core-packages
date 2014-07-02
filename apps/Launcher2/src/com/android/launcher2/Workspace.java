@@ -693,7 +693,7 @@ public class Workspace extends SmoothPagedView
 
         // Only show page outlines as we pan if we are on large screen
         if (LauncherApplication.isScreenLarge()) {
-            showOutlines();
+            // showOutlines();
         }
     }
 
@@ -1213,10 +1213,10 @@ public class Workspace extends SmoothPagedView
         if (LauncherApplication.isScreenLarge()) {
             // We don't call super.screenScrolled() here because we handle the adjacent pages alpha
             // ourselves (for efficiency), and there are no scrolling indicators to update.
-            screenScrolledLargeUI(screenCenter);
+            // screenScrolledLargeUI(screenCenter);
         } else {
-            super.screenScrolled(screenCenter);
-            screenScrolledStandardUI(screenCenter);
+            // super.screenScrolled(screenCenter);
+            // screenScrolledStandardUI(screenCenter);
         }
     }
 
@@ -1582,198 +1582,198 @@ public class Workspace extends SmoothPagedView
             return;
         }
 
-        // Initialize animation arrays for the first time if necessary
-        initAnimationArrays();
+        // // Initialize animation arrays for the first time if necessary
+        // initAnimationArrays();
 
-        // Cancel any running transition animations
-        if (mAnimator != null) mAnimator.cancel();
-        mAnimator = new AnimatorSet();
+        // // Cancel any running transition animations
+        // if (mAnimator != null) mAnimator.cancel();
+        // mAnimator = new AnimatorSet();
 
-        // Stop any scrolling, move to the current page right away
-        setCurrentPage((mNextPage != INVALID_PAGE) ? mNextPage : mCurrentPage);
+        // // Stop any scrolling, move to the current page right away
+        // setCurrentPage((mNextPage != INVALID_PAGE) ? mNextPage : mCurrentPage);
 
-        final State oldState = mState;
-        final boolean oldStateIsNormal = (oldState == State.NORMAL);
-        final boolean oldStateIsSmall = (oldState == State.SMALL);
-        mState = state;
-        final boolean stateIsNormal = (state == State.NORMAL);
-        final boolean stateIsSpringLoaded = (state == State.SPRING_LOADED);
-        final boolean stateIsSmall = (state == State.SMALL);
-        float finalScaleFactor = 1.0f;
-        float finalBackgroundAlpha = stateIsSpringLoaded ? 1.0f : 0f;
-        float translationX = 0;
-        float translationY = 0;
-        boolean zoomIn = true;
+        // final State oldState = mState;
+        // final boolean oldStateIsNormal = (oldState == State.NORMAL);
+        // final boolean oldStateIsSmall = (oldState == State.SMALL);
+        // mState = state;
+        // final boolean stateIsNormal = (state == State.NORMAL);
+        // final boolean stateIsSpringLoaded = (state == State.SPRING_LOADED);
+        // final boolean stateIsSmall = (state == State.SMALL);
+        // float finalScaleFactor = 1.0f;
+        // float finalBackgroundAlpha = stateIsSpringLoaded ? 1.0f : 0f;
+        // float translationX = 0;
+        // float translationY = 0;
+        // boolean zoomIn = true;
 
-        if (state != State.NORMAL) {
-            finalScaleFactor = mSpringLoadedShrinkFactor - (stateIsSmall ? 0.1f : 0);
-            if (oldStateIsNormal && stateIsSmall) {
-                zoomIn = false;
-                setLayoutScale(finalScaleFactor);
-                updateChildrenLayersEnabled();
-            } else {
-                finalBackgroundAlpha = 1.0f;
-                setLayoutScale(finalScaleFactor);
-            }
-        } else {
-            setLayoutScale(1.0f);
-        }
+        // if (state != State.NORMAL) {
+        //     finalScaleFactor = mSpringLoadedShrinkFactor - (stateIsSmall ? 0.1f : 0);
+        //     if (oldStateIsNormal && stateIsSmall) {
+        //         zoomIn = false;
+        //         setLayoutScale(finalScaleFactor);
+        //         updateChildrenLayersEnabled();
+        //     } else {
+        //         finalBackgroundAlpha = 1.0f;
+        //         setLayoutScale(finalScaleFactor);
+        //     }
+        // } else {
+        //     setLayoutScale(1.0f);
+        // }
 
-        final int duration = zoomIn ? 
-                getResources().getInteger(R.integer.config_workspaceUnshrinkTime) :
-                getResources().getInteger(R.integer.config_appsCustomizeWorkspaceShrinkTime);
-        for (int i = 0; i < getChildCount(); i++) {
-            final CellLayout cl = (CellLayout) getChildAt(i);
-            float rotation = 0f;
-            float initialAlpha = cl.getAlpha();
-            float finalAlphaMultiplierValue = 1f;
-            float finalAlpha = (!mFadeInAdjacentScreens || stateIsSpringLoaded ||
-                    (i == mCurrentPage)) ? 1f : 0f;
+        // final int duration = zoomIn ? 
+        //         getResources().getInteger(R.integer.config_workspaceUnshrinkTime) :
+        //         getResources().getInteger(R.integer.config_appsCustomizeWorkspaceShrinkTime);
+        // for (int i = 0; i < getChildCount(); i++) {
+        //     final CellLayout cl = (CellLayout) getChildAt(i);
+        //     float rotation = 0f;
+        //     float initialAlpha = cl.getAlpha();
+        //     float finalAlphaMultiplierValue = 1f;
+        //     float finalAlpha = (!mFadeInAdjacentScreens || stateIsSpringLoaded ||
+        //             (i == mCurrentPage)) ? 1f : 0f;
 
-            // Determine the pages alpha during the state transition
-            if ((oldStateIsSmall && stateIsNormal) ||
-                (oldStateIsNormal && stateIsSmall)) {
-                // To/from workspace - only show the current page unless the transition is not
-                //                     animated and the animation end callback below doesn't run
-                if (i == mCurrentPage || !animated) {
-                    finalAlpha = 1f;
-                    finalAlphaMultiplierValue = 0f;
-                } else {
-                    initialAlpha = 0f;
-                    finalAlpha = 0f;
-                }
-            }
+        //     // Determine the pages alpha during the state transition
+        //     if ((oldStateIsSmall && stateIsNormal) ||
+        //         (oldStateIsNormal && stateIsSmall)) {
+        //         // To/from workspace - only show the current page unless the transition is not
+        //         //                     animated and the animation end callback below doesn't run
+        //         if (i == mCurrentPage || !animated) {
+        //             finalAlpha = 1f;
+        //             finalAlphaMultiplierValue = 0f;
+        //         } else {
+        //             initialAlpha = 0f;
+        //             finalAlpha = 0f;
+        //         }
+        //     }
 
-            // Update the rotation of the screen (don't apply rotation on Phone UI)
-            if (LauncherApplication.isScreenLarge()) {
-                if (i < mCurrentPage) {
-                    rotation = WORKSPACE_ROTATION;
-                } else if (i > mCurrentPage) {
-                    rotation = -WORKSPACE_ROTATION;
-                }
-            }
+        //     // Update the rotation of the screen (don't apply rotation on Phone UI)
+        //     if (LauncherApplication.isScreenLarge()) {
+        //         if (i < mCurrentPage) {
+        //             rotation = WORKSPACE_ROTATION;
+        //         } else if (i > mCurrentPage) {
+        //             rotation = -WORKSPACE_ROTATION;
+        //         }
+        //     }
 
-            // If the screen is not xlarge, then don't rotate the CellLayouts
-            // NOTE: If we don't update the side pages alpha, then we should not hide the side
-            //       pages. see unshrink().
-            if (LauncherApplication.isScreenLarge()) {
-                translationX = getOffsetXForRotation(rotation, cl.getWidth(), cl.getHeight());
-            }
+        //     // If the screen is not xlarge, then don't rotate the CellLayouts
+        //     // NOTE: If we don't update the side pages alpha, then we should not hide the side
+        //     //       pages. see unshrink().
+        //     if (LauncherApplication.isScreenLarge()) {
+        //         translationX = getOffsetXForRotation(rotation, cl.getWidth(), cl.getHeight());
+        //     }
 
-            mOldAlphas[i] = initialAlpha;
-            mNewAlphas[i] = finalAlpha;
-            if (animated) {
-                mOldTranslationXs[i] = cl.getTranslationX();
-                mOldTranslationYs[i] = cl.getTranslationY();
-                mOldScaleXs[i] = cl.getScaleX();
-                mOldScaleYs[i] = cl.getScaleY();
-                mOldBackgroundAlphas[i] = cl.getBackgroundAlpha();
-                mOldBackgroundAlphaMultipliers[i] = cl.getBackgroundAlphaMultiplier();
-                mOldRotationYs[i] = cl.getRotationY();
+        //     mOldAlphas[i] = initialAlpha;
+        //     mNewAlphas[i] = finalAlpha;
+        //     if (animated) {
+        //         mOldTranslationXs[i] = cl.getTranslationX();
+        //         mOldTranslationYs[i] = cl.getTranslationY();
+        //         mOldScaleXs[i] = cl.getScaleX();
+        //         mOldScaleYs[i] = cl.getScaleY();
+        //         mOldBackgroundAlphas[i] = cl.getBackgroundAlpha();
+        //         mOldBackgroundAlphaMultipliers[i] = cl.getBackgroundAlphaMultiplier();
+        //         mOldRotationYs[i] = cl.getRotationY();
 
-                mNewTranslationXs[i] = translationX;
-                mNewTranslationYs[i] = translationY;
-                mNewScaleXs[i] = finalScaleFactor;
-                mNewScaleYs[i] = finalScaleFactor;
-                mNewBackgroundAlphas[i] = finalBackgroundAlpha;
-                mNewBackgroundAlphaMultipliers[i] = finalAlphaMultiplierValue;
-                mNewRotationYs[i] = rotation;
-            } else {
-                cl.setTranslationX(translationX);
-                cl.setTranslationY(translationY);
-                cl.setScaleX(finalScaleFactor);
-                cl.setScaleY(finalScaleFactor);
-                cl.setBackgroundAlpha(finalBackgroundAlpha);
-                cl.setBackgroundAlphaMultiplier(finalAlphaMultiplierValue);
-                cl.setAlpha(finalAlpha);
-                cl.setRotationY(rotation);
-                mChangeStateAnimationListener.onAnimationEnd(null);
-            }
-        }
+        //         mNewTranslationXs[i] = translationX;
+        //         mNewTranslationYs[i] = translationY;
+        //         mNewScaleXs[i] = finalScaleFactor;
+        //         mNewScaleYs[i] = finalScaleFactor;
+        //         mNewBackgroundAlphas[i] = finalBackgroundAlpha;
+        //         mNewBackgroundAlphaMultipliers[i] = finalAlphaMultiplierValue;
+        //         mNewRotationYs[i] = rotation;
+        //     } else {
+        //         cl.setTranslationX(translationX);
+        //         cl.setTranslationY(translationY);
+        //         cl.setScaleX(finalScaleFactor);
+        //         cl.setScaleY(finalScaleFactor);
+        //         cl.setBackgroundAlpha(finalBackgroundAlpha);
+        //         cl.setBackgroundAlphaMultiplier(finalAlphaMultiplierValue);
+        //         cl.setAlpha(finalAlpha);
+        //         cl.setRotationY(rotation);
+        //         mChangeStateAnimationListener.onAnimationEnd(null);
+        //     }
+        // }
 
-        if (animated) {
-            ValueAnimator animWithInterpolator =
-                ValueAnimator.ofFloat(0f, 1f).setDuration(duration);
+        // if (animated) {
+        //     ValueAnimator animWithInterpolator =
+        //         ValueAnimator.ofFloat(0f, 1f).setDuration(duration);
 
-            if (zoomIn) {
-                animWithInterpolator.setInterpolator(mZoomInInterpolator);
-            }
+        //     if (zoomIn) {
+        //         animWithInterpolator.setInterpolator(mZoomInInterpolator);
+        //     }
 
-            animWithInterpolator.addListener(new AnimatorListenerAdapter() {
-                @Override
-                public void onAnimationEnd(android.animation.Animator animation) {
-                    // The above code to determine initialAlpha and finalAlpha will ensure that only
-                    // the current page is visible during (and subsequently, after) the transition
-                    // animation.  If fade adjacent pages is disabled, then re-enable the page
-                    // visibility after the transition animation.
-                    if (!mFadeInAdjacentScreens && stateIsNormal && oldStateIsSmall) {
-                        for (int i = 0; i < getChildCount(); i++) {
-                            final CellLayout cl = (CellLayout) getChildAt(i);
-                            cl.setAlpha(1f);
-                        }
-                    }
-                }
-            });
-            animWithInterpolator.addUpdateListener(new LauncherAnimatorUpdateListener() {
-                public void onAnimationUpdate(float a, float b) {
-                    mTransitionProgress = b;
-                    if (b == 0f) {
-                        // an optimization, but not required
-                        return;
-                    }
-                    invalidate();
-                    for (int i = 0; i < getChildCount(); i++) {
-                        final CellLayout cl = (CellLayout) getChildAt(i);
-                        cl.invalidate();
-                        cl.setFastTranslationX(a * mOldTranslationXs[i] + b * mNewTranslationXs[i]);
-                        cl.setFastTranslationY(a * mOldTranslationYs[i] + b * mNewTranslationYs[i]);
-                        cl.setFastScaleX(a * mOldScaleXs[i] + b * mNewScaleXs[i]);
-                        cl.setFastScaleY(a * mOldScaleYs[i] + b * mNewScaleYs[i]);
-                        cl.setFastBackgroundAlpha(
-                                a * mOldBackgroundAlphas[i] + b * mNewBackgroundAlphas[i]);
-                        cl.setBackgroundAlphaMultiplier(a * mOldBackgroundAlphaMultipliers[i] +
-                                b * mNewBackgroundAlphaMultipliers[i]);
-                        cl.setFastAlpha(a * mOldAlphas[i] + b * mNewAlphas[i]);
-                        cl.invalidate();
-                    }
-                    syncChildrenLayersEnabledOnVisiblePages();
-                }
-            });
+        //     animWithInterpolator.addListener(new AnimatorListenerAdapter() {
+        //         @Override
+        //         public void onAnimationEnd(android.animation.Animator animation) {
+        //             // The above code to determine initialAlpha and finalAlpha will ensure that only
+        //             // the current page is visible during (and subsequently, after) the transition
+        //             // animation.  If fade adjacent pages is disabled, then re-enable the page
+        //             // visibility after the transition animation.
+        //             if (!mFadeInAdjacentScreens && stateIsNormal && oldStateIsSmall) {
+        //                 for (int i = 0; i < getChildCount(); i++) {
+        //                     final CellLayout cl = (CellLayout) getChildAt(i);
+        //                     cl.setAlpha(1f);
+        //                 }
+        //             }
+        //         }
+        //     });
+        //     animWithInterpolator.addUpdateListener(new LauncherAnimatorUpdateListener() {
+        //         public void onAnimationUpdate(float a, float b) {
+        //             mTransitionProgress = b;
+        //             if (b == 0f) {
+        //                 // an optimization, but not required
+        //                 return;
+        //             }
+        //             invalidate();
+        //             for (int i = 0; i < getChildCount(); i++) {
+        //                 final CellLayout cl = (CellLayout) getChildAt(i);
+        //                 cl.invalidate();
+        //                 cl.setFastTranslationX(a * mOldTranslationXs[i] + b * mNewTranslationXs[i]);
+        //                 cl.setFastTranslationY(a * mOldTranslationYs[i] + b * mNewTranslationYs[i]);
+        //                 cl.setFastScaleX(a * mOldScaleXs[i] + b * mNewScaleXs[i]);
+        //                 cl.setFastScaleY(a * mOldScaleYs[i] + b * mNewScaleYs[i]);
+        //                 cl.setFastBackgroundAlpha(
+        //                         a * mOldBackgroundAlphas[i] + b * mNewBackgroundAlphas[i]);
+        //                 cl.setBackgroundAlphaMultiplier(a * mOldBackgroundAlphaMultipliers[i] +
+        //                         b * mNewBackgroundAlphaMultipliers[i]);
+        //                 cl.setFastAlpha(a * mOldAlphas[i] + b * mNewAlphas[i]);
+        //                 cl.invalidate();
+        //             }
+        //             syncChildrenLayersEnabledOnVisiblePages();
+        //         }
+        //     });
 
-            ValueAnimator rotationAnim =
-                ValueAnimator.ofFloat(0f, 1f).setDuration(duration);
-            rotationAnim.setInterpolator(new DecelerateInterpolator(2.0f));
-            rotationAnim.addUpdateListener(new LauncherAnimatorUpdateListener() {
-                public void onAnimationUpdate(float a, float b) {
-                    if (b == 0f) {
-                        // an optimization, but not required
-                        return;
-                    }
-                    for (int i = 0; i < getChildCount(); i++) {
-                        final CellLayout cl = (CellLayout) getChildAt(i);
-                        cl.setFastRotationY(a * mOldRotationYs[i] + b * mNewRotationYs[i]);
-                    }
-                }
-            });
+        //     ValueAnimator rotationAnim =
+        //         ValueAnimator.ofFloat(0f, 1f).setDuration(duration);
+        //     rotationAnim.setInterpolator(new DecelerateInterpolator(2.0f));
+        //     rotationAnim.addUpdateListener(new LauncherAnimatorUpdateListener() {
+        //         public void onAnimationUpdate(float a, float b) {
+        //             if (b == 0f) {
+        //                 // an optimization, but not required
+        //                 return;
+        //             }
+        //             for (int i = 0; i < getChildCount(); i++) {
+        //                 final CellLayout cl = (CellLayout) getChildAt(i);
+        //                 cl.setFastRotationY(a * mOldRotationYs[i] + b * mNewRotationYs[i]);
+        //             }
+        //         }
+        //     });
 
-            mAnimator.playTogether(animWithInterpolator, rotationAnim);
-            mAnimator.setStartDelay(delay);
-            // If we call this when we're not animated, onAnimationEnd is never called on
-            // the listener; make sure we only use the listener when we're actually animating
-            mAnimator.addListener(mChangeStateAnimationListener);
-            mAnimator.start();
-        }
+        //     mAnimator.playTogether(animWithInterpolator, rotationAnim);
+        //     mAnimator.setStartDelay(delay);
+        //     // If we call this when we're not animated, onAnimationEnd is never called on
+        //     // the listener; make sure we only use the listener when we're actually animating
+        //     mAnimator.addListener(mChangeStateAnimationListener);
+        //     mAnimator.start();
+        // }
 
-        if (stateIsSpringLoaded) {
-            // Right now we're covered by Apps Customize
-            // Show the background gradient immediately, so the gradient will
-            // be showing once AppsCustomize disappears
-            animateBackgroundGradient(getResources().getInteger(
-                    R.integer.config_appsCustomizeSpringLoadedBgAlpha) / 100f, false);
-        } else {
-            // Fade the background gradient away
-            animateBackgroundGradient(0f, true);
-        }
+        // if (stateIsSpringLoaded) {
+        //     // Right now we're covered by Apps Customize
+        //     // Show the background gradient immediately, so the gradient will
+        //     // be showing once AppsCustomize disappears
+        //     animateBackgroundGradient(getResources().getInteger(
+        //             R.integer.config_appsCustomizeSpringLoadedBgAlpha) / 100f, false);
+        // } else {
+        //     // Fade the background gradient away
+        //     animateBackgroundGradient(0f, true);
+        // }
         syncChildrenLayersEnabledOnVisiblePages();
     }
 

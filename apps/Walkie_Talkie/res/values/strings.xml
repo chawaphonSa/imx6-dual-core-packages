@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Walkie-Talkie</string>
+    <string name="tx_string">Tx freq:</string>
+    <string name="rx_string">Rx freq:</string>
+    <string name="set_button">set</string>
+</resources>
